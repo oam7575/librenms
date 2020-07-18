@@ -1,28 +1,26 @@
 <?php
 
-if ($device['os_group'] == 'unix') {
-    echo $config['project_name'].' UNIX Agent: ';
+use App\Models\Device;
+use LibreNMS\RRD\RrdDefinition;
+
+if ($device['os_group'] == 'unix' || $device['os'] == 'windows') {
+    echo \LibreNMS\Config::get('project_name') . ' UNIX Agent: ';
 
     $agent_port = get_dev_attrib($device, 'override_Unixagent_port');
     if (empty($agent_port)) {
-        $agent_port = $config['unix-agent']['port'];
-    }
-    if (empty($config['unix-agent']['connection-timeout'])) {
-        $config['unix-agent']['connection-timeout'] = $config['unix-agent-connection-time-out'];
-    }
-    if (empty($config['unix-agent']['read-timeout'])) {
-        $config['unix-agent']['read-timeout'] = $config['unix-agent-read-time-out'];
+        $agent_port = \LibreNMS\Config::get('unix-agent.port');
     }
 
     $agent_start = microtime(true);
-    $agent       = fsockopen($device['hostname'], $agent_port, $errno, $errstr, $config['unix-agent']['connection-timeout']);
+    $poller_target = Device::pollerTarget($device['hostname']);
+    $agent = fsockopen($poller_target, $agent_port, $errno, $errstr, \LibreNMS\Config::get('unix-agent.connection-timeout'));
 
     // Set stream timeout (for timeouts during agent  fetch
-    stream_set_timeout($agent, $config['unix-agent']['read-timeout']);
+    stream_set_timeout($agent, \LibreNMS\Config::get('unix-agent.read-timeout'));
     $agentinfo = stream_get_meta_data($agent);
 
     if (!$agent) {
-        echo 'Connection to UNIX agent failed on port '.$port.'.';
+        echo 'Connection to UNIX agent failed on port '.$agent_port.'.';
     } else {
         // fetch data while not eof and not timed-out
         while ((!feof($agent)) && (!$agentinfo['timed_out'])) {
@@ -31,7 +29,7 @@ if ($device['os_group'] == 'unix') {
         }
 
         if ($agentinfo['timed_out']) {
-            echo 'Connection to UNIX agent timed out during fetch on port '.$port.'.';
+            echo 'Connection to UNIX agent timed out during fetch on port '.$agent_port.'.';
         }
     }
 
@@ -42,7 +40,7 @@ if ($device['os_group'] == 'unix') {
         echo 'execution time: '.$agent_time.'ms';
 
         $tags = array(
-            'rrd_def' => 'DS:time:GAUGE:600:0:U',
+            'rrd_def' => RrdDefinition::make()->addDataset('time', 'GAUGE', 0),
         );
         $fields = array(
             'time' => $agent_time,
@@ -93,7 +91,7 @@ if ($device['os_group'] == 'unix') {
             }
         }
 
-        // Processes
+        // Unix Processes
         if (!empty($agent_data['ps'])) {
             echo 'Processes: ';
             dbDelete('processes', 'device_id = ?', array($device['device_id']));
@@ -106,7 +104,31 @@ if ($device['os_group'] == 'unix') {
                 }
             }
             if (count($data) > 0) {
-                dbBulkInsert('processes', $data);
+                dbBulkInsert($data, 'processes');
+            }
+            echo "\n";
+        }
+
+        // Windows Processes
+        if (!empty($agent_data['ps:sep(9)'])) {
+            echo 'Processes: ';
+            dbDelete('processes', 'device_id = ?', array($device['device_id']));
+            $data=array();
+            foreach (explode("\n", $agent_data['ps:sep(9)']) as $process) {
+                $process = preg_replace('/\(([^,;]+),([0-9]*),([0-9]*),([0-9]*),([0-9]*),([0-9]*),([0-9]*),([0-9]*),([0-9]*),([0-9]*)?,?([0-9]*)\)(.*)/', '\\1|\\2|\\3|\\4|\\5|\\6|\\7|\\8|\\9|\\10|\\11|\\12', $process);
+                list($user, $VirtualSize, $WorkingSetSize, $zero, $processId, $PageFileUsage, $UserModeTime, $KernelModeTime, $HandleCount, $ThreadCount, $uptime, $process_name) = explode('|', $process, 12);
+                if (!empty($process_name)) {
+                    $cputime = ($UserModeTime + $KernelModeTime) / 10000000;
+                    $days = floor($cputime / 86400);
+                    $hours = str_pad(floor(($cputime / 3600) % 24), 2, '0', STR_PAD_LEFT);
+                    $minutes = str_pad(floor(($cputime / 60) % 60), 2, '0', STR_PAD_LEFT);
+                    $seconds = str_pad(($cputime % 60), 2, '0', STR_PAD_LEFT);
+                    $cputime = ($days > 0 ? "$days-" : '') . "$hours:$minutes:$seconds";
+                    $data[]=array('device_id' => $device['device_id'], 'pid' => $processId, 'user' => $user, 'vsz' => $PageFileUsage + $WorkingSetSize, 'rss' => $WorkingSetSize, 'cputime' => $cputime, 'command' => $process_name);
+                }
+            }
+            if (count($data) > 0) {
+                dbBulkInsert($data, 'processes');
             }
             echo "\n";
         }
@@ -154,6 +176,10 @@ if ($device['os_group'] == 'unix') {
     if (!empty($agent_sensors)) {
         echo 'Sensors: ';
         check_valid_sensors($device, 'temperature', $valid['sensor'], 'agent');
+        d_echo($agent_sensors);
+        if (count($agent_sensors) > 0) {
+            record_sensor_data($device, $agent_sensors);
+        }
         echo "\n";
     }
 

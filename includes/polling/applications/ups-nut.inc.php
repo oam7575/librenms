@@ -20,6 +20,8 @@
 *
 */
 
+use LibreNMS\RRD\RrdDefinition;
+
 // (2016-11-25, R.Morris) ups-nut, try "extend" -> if not, fall back to "exec" support.
 // -> Similar to approach used by Distro, but skip "legacy UCD-MIB shell support"
 //
@@ -40,21 +42,42 @@ if (!$ups_nut) {
 
 echo ' '.$name;
 
-// (2016-11-25, R.Morris) Correct list and data below, to match latest ups-nut.sh script (missing one input, and misaligned).
-list ($charge, $battery_low, $remaining, $bat_volt, $bat_nom, $line_nom, $input_volt, $load) = explode("\n", $ups_nut);
+// (2020-05-13, Jon.W) Added ups status data and updated ups-nut.sh script.
+list (
+    $charge,
+    $battery_low,
+    $remaining,
+    $bat_volt,
+    $bat_nom,
+    $line_nom,
+    $input_volt,
+    $load,
+    $UPSOnLine,
+    $UPSOnBattery,
+    $UPSLowBattery,
+    $UPSHighBattery,
+    $UPSBatteryReplace,
+    $UPSBatteryCharging,
+    $UPSBatteryDischarging,
+    $UPSUPSBypass,
+    $UPSRuntimeCalibration,
+    $UPSOffline,
+    $UPSUPSOverloaded,
+    $UPSUPSBuck,
+    $UPSUPSBoost,
+    $UPSForcedShutdown
+    ) = explode("\n", $ups_nut);
 
 $rrd_name = array('app', $name, $app_id);
-$rrd_def = array(
-    'DS:charge:GAUGE:600:0:100',
-    'DS:battery_low:GAUGE:600:0:100',
-    'DS:time_remaining:GAUGE:600:0:U',
-    'DS:battery_voltage:GAUGE:600:0:U',
-    'DS:battery_nominal:GAUGE:600:0:U',
-    'DS:line_nominal:GAUGE:600:0:U',
-    'DS:input_voltage:GAUGE:600:0:U',
-    'DS:load:GAUGE:600:0:100'
-);
-//print_r(array_values($rrd_def));
+$rrd_def = RrdDefinition::make()
+    ->addDataset('charge', 'GAUGE', 0, 100)
+    ->addDataset('battery_low', 'GAUGE', 0, 100)
+    ->addDataset('time_remaining', 'GAUGE', 0)
+    ->addDataset('battery_voltage', 'GAUGE', 0)
+    ->addDataset('battery_nominal', 'GAUGE', 0)
+    ->addDataset('line_nominal', 'GAUGE', 0)
+    ->addDataset('input_voltage', 'GAUGE', 0)
+    ->addDataset('load', 'GAUGE', 0, 100);
 
 $fields = array(
     'charge' => $charge,
@@ -66,7 +89,29 @@ $fields = array(
     'input_voltage' => $input_volt,
     'load' => $load
 );
-//print_r(array_values($fields));
+
+$sensors = [
+    ['state_name' => 'UPSOnLine'            , 'value' => $UPSOnLine],
+    ['state_name' => 'UPSOnBattery'         , 'value' => $UPSOnBattery],
+    ['state_name' => 'UPSLowBattery'        , 'value' => $UPSLowBattery],
+    ['state_name' => 'UPSHighBattery'       , 'value' => $UPSHighBattery],
+    ['state_name' => 'UPSBatteryReplace'    , 'value' => $UPSBatteryReplace],
+    ['state_name' => 'UPSBatteryCharging'   , 'value' => $UPSBatteryCharging],
+    ['state_name' => 'UPSBatteryDischarging', 'value' => $UPSBatteryDischarging],
+    ['state_name' => 'UPSUPSBypass'         , 'value' => $UPSUPSBypass],
+    ['state_name' => 'UPSRuntimeCalibration', 'value' => $UPSRuntimeCalibration],
+    ['state_name' => 'UPSOffline'           , 'value' => $UPSOffline],
+    ['state_name' => 'UPSUPSOverloaded'     , 'value' => $UPSUPSOverloaded],
+    ['state_name' => 'UPSUPSBuck'           , 'value' => $UPSUPSBuck],
+    ['state_name' => 'UPSUPSBoost'          , 'value' => $UPSUPSBoost],
+    ['state_name' => 'UPSForcedShutdown'    , 'value' => $UPSForcedShutdown]
+];
+
+foreach ($sensors as $index => $sensor) {
+    $rrd_def->addDataset($sensor['state_name'], 'GAUGE', 0);
+    $fields[$sensor['state_name']]= $sensor['value'];
+}
 
 $tags = compact('name', 'app_id', 'rrd_name', 'rrd_def');
 data_update($device, 'app', $tags, $fields);
+update_application($app, $ups_nut, $fields);

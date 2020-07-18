@@ -8,7 +8,7 @@ if (key_exists('vrf_lite_cisco', $device) && (count($device['vrf_lite_cisco'])!=
 foreach ($vrfs_lite_cisco as $vrf) {
     $device['context_name']=$vrf['context_name'];
 
-    $oids = snmp_walk($device, 'ipAddressIfIndex.ipv6', '-Ln -Osq', 'IP-MIB');
+    $oids = snmp_walk($device, 'ipAddressIfIndex.ipv6', ['-Osq', '-Ln'], 'IP-MIB');
     $oids = str_replace('ipAddressIfIndex.ipv6.', '', $oids);
     $oids = str_replace('"', '', $oids);
     $oids = str_replace('IP-MIB::', '', $oids);
@@ -41,14 +41,19 @@ foreach ($vrfs_lite_cisco as $vrf) {
             $ipv6_prefixlen = explode('.', $ipv6_prefixlen);
             $ipv6_prefixlen = str_replace('"', '', end($ipv6_prefixlen));
 
+            if (Str::contains($ipv6_prefixlen, 'SNMPv2-SMI::zeroDotZero')) {
+                d_echo('Incomplete IPv6 data in IF-MIB');
+                $oids = trim(Str::replaceFirst($data, '', $oids));
+            }
+            
             $ipv6_origin = snmp_get($device, ".1.3.6.1.2.1.4.34.1.6.2.16.$oid", '-Ovq', 'IP-MIB');
 
             discover_process_ipv6($valid, $ifIndex, $ipv6_address, $ipv6_prefixlen, $ipv6_origin, $device['context_name']);
         } //end if
     } //end foreach
 
-    if (!$oids) {
-        $oids = snmp_walk($device, 'ipv6AddrPfxLength', '-Ln -Osq -OnU', 'IPV6-MIB');
+    if (empty($oids)) {
+        $oids = snmp_walk($device, 'ipv6AddrPfxLength', ['-OsqnU', '-Ln'], 'IPV6-MIB');
         $oids = str_replace('.1.3.6.1.2.1.55.1.8.1.2.', '', $oids);
         $oids = str_replace('"', '', $oids);
         $oids = trim($oids);
@@ -65,9 +70,10 @@ foreach ($vrfs_lite_cisco as $vrf) {
         } //end foreach
     } //end if
 
-    $sql = "SELECT * FROM ipv6_addresses AS A, ports AS I WHERE I.device_id = '".$device['device_id']."' AND  A.port_id = I.port_id'";
-
-    foreach (dbFetchRows($sql) as $row) {
+    $sql = 'SELECT `ipv6_addresses`.*, `ports`.`device_id`, `ports`.`ifIndex` FROM `ipv6_addresses`';
+    $sql .= ' LEFT JOIN `ports` ON `ipv6_addresses`.`port_id` = `ports`.`port_id`';
+    $sql .= ' WHERE `ports`.device_id = ? OR `ports`.`device_id` IS NULL';
+    foreach (dbFetchRows($sql, array($device['device_id'])) as $row) {
         $full_address  = $row['ipv6_address'].'/'.$row['ipv6_prefixlen'];
         $port_id       = $row['port_id'];
         $valid_address = $full_address.'-'.$port_id;
